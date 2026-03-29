@@ -6,6 +6,7 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const MAX_RETRIES = 5;
 
 export type LLMProvider = 'openai' | 'anthropic' | 'gemini' | 'openai-compatible';
 
@@ -42,10 +43,13 @@ export async function generateText(
   const temperature = config.temperature ?? 0.7;
   const maxTokens = config.maxTokens ?? 4096;
 
-  // ── Gemini (native SDK) ──────────────────────────────────────────────────
+  // ── Gemini (native SDK) ────────────────────────────────────────────────────
   if (provider === 'gemini') {
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? '');
-    const geminiModel = genAI.getGenerativeModel({ model });
+    const geminiModel = genAI.getGenerativeModel({
+      model,
+      generationConfig: { temperature, maxOutputTokens: maxTokens },
+    });
 
     let attempt = 0;
     while (true) {
@@ -53,21 +57,22 @@ export async function generateText(
         const result = await geminiModel.generateContent(prompt);
         return result.response.text().trim();
       } catch (err: unknown) {
-        const e = err as { status?: number; message?: string };
-        const status = e.status ?? (e.message?.includes('429') ? 429 : 0);
+        const msg = err instanceof Error ? err.message : String(err);
+        const is429 = msg.includes('429') || msg.includes('quota') || msg.includes('rate');
 
-        if (status === 429 && attempt < MAX_RETRIES) {
+        if (is429 && attempt < MAX_RETRIES) {
           attempt++;
           const waitMs = Math.min(1000 * 2 ** attempt, 60_000);
-          console.warn(`[gemini/${model}] Rate limited (429). Retry ${attempt}/${MAX_RETRIES} in ${waitMs / 1000}s…`);
+          console.warn(`[gemini/${model}] Rate limited. Retry ${attempt}/${MAX_RETRIES} in ${waitMs / 1000}s…`);
           await sleep(waitMs);
           continue;
         }
-        throw new Error(`[gemini/${model}] API error: ${e.message ?? String(err)}`);
+        throw new Error(`[gemini/${model}] ${msg}`);
       }
     }
   }
 
+  // ── Anthropic ──────────────────────────────────────────────────────────────
   if (provider === 'anthropic') {
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const response = await client.messages.create({
@@ -80,7 +85,7 @@ export async function generateText(
     return block.text.trim();
   }
 
-  // OpenAI or OpenAI-compatible
+  // ── OpenAI / OpenAI-compatible ─────────────────────────────────────────────
   const clientOptions: ConstructorParameters<typeof OpenAI>[0] = {
     apiKey: process.env.OPENAI_API_KEY ?? process.env.LLM_API_KEY ?? 'no-key',
   };
@@ -89,9 +94,6 @@ export async function generateText(
   }
 
   const client = new OpenAI(clientOptions);
-
-  // Retry with exponential backoff for rate-limit (429) errors
-  const MAX_RETRIES = 5;
   let attempt = 0;
 
   while (true) {
@@ -108,8 +110,8 @@ export async function generateText(
 
       if (e.status === 429 && attempt < MAX_RETRIES) {
         attempt++;
-        const waitMs = Math.min(1000 * 2 ** attempt, 60_000); // 2s, 4s, 8s, 16s, 32s
-        console.warn(`[${provider}/${model}] Rate limited (429). Retry ${attempt}/${MAX_RETRIES} in ${waitMs / 1000}s…`);
+        const waitMs = Math.min(1000 * 2 ** attempt, 60_000);
+        console.warn(`[${provider}/${model}] Rate limited. Retry ${attempt}/${MAX_RETRIES} in ${waitMs / 1000}s…`);
         await sleep(waitMs);
         continue;
       }
@@ -126,13 +128,11 @@ export async function generateJSON<T>(
 ): Promise<T> {
   const rawText = await generateText(prompt, { ...config, temperature: 0.3 });
 
-  // Strip markdown code fences if present
   const cleaned = rawText.replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '').trim();
 
   try {
     return JSON.parse(cleaned) as T;
   } catch {
-    // Last resort: extract first JSON array/object
     const match = cleaned.match(/(\[[\s\S]*\]|\{[\s\S]*\})/);
     if (match) return JSON.parse(match[1]) as T;
     throw new Error(`Failed to parse JSON from AI response:\n${rawText}`);
