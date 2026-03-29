@@ -4,6 +4,8 @@ import * as dotenv from 'dotenv';
 
 dotenv.config();
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export type LLMProvider = 'openai' | 'anthropic' | 'gemini' | 'openai-compatible';
 
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/';
@@ -66,18 +68,33 @@ export async function generateText(
 
   const client = new OpenAI(clientOptions);
 
-  try {
-    const response = await client.chat.completions.create({
-      model,
-      temperature,
-      max_tokens: maxTokens,
-      messages: [{ role: 'user', content: prompt }],
-    });
-    return response.choices[0]?.message?.content?.trim() ?? '';
-  } catch (err: unknown) {
-    const e = err as { status?: number; message?: string; error?: unknown };
-    const detail = e.error ? JSON.stringify(e.error) : e.message ?? String(err);
-    throw new Error(`[${provider}/${model}] API error ${e.status ?? ''}: ${detail}`);
+  // Retry with exponential backoff for rate-limit (429) errors
+  const MAX_RETRIES = 5;
+  let attempt = 0;
+
+  while (true) {
+    try {
+      const response = await client.chat.completions.create({
+        model,
+        temperature,
+        max_tokens: maxTokens,
+        messages: [{ role: 'user', content: prompt }],
+      });
+      return response.choices[0]?.message?.content?.trim() ?? '';
+    } catch (err: unknown) {
+      const e = err as { status?: number; message?: string; error?: unknown };
+
+      if (e.status === 429 && attempt < MAX_RETRIES) {
+        attempt++;
+        const waitMs = Math.min(1000 * 2 ** attempt, 60_000); // 2s, 4s, 8s, 16s, 32s
+        console.warn(`[${provider}/${model}] Rate limited (429). Retry ${attempt}/${MAX_RETRIES} in ${waitMs / 1000}s…`);
+        await sleep(waitMs);
+        continue;
+      }
+
+      const detail = e.error ? JSON.stringify(e.error) : e.message ?? String(err);
+      throw new Error(`[${provider}/${model}] API error ${e.status ?? ''}: ${detail}`);
+    }
   }
 }
 

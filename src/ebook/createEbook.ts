@@ -1,5 +1,8 @@
 import { v4 as uuidv4 } from 'uuid';
 import { generateText, generateJSON } from '../ai/llmClient';
+
+// Minimum gap between API calls to avoid rate-limit on free-tier providers (ms)
+const INTER_CALL_DELAY = Number(process.env.INTER_CALL_DELAY_MS ?? 4000);
 import {
   buildTitlePrompt,
   buildDescriptionPrompt,
@@ -34,16 +37,20 @@ export async function createEbook(
     await emit({ ...event, progress: Math.round((completedSteps / totalSteps) * 100) });
   };
 
+  const pause = () => new Promise((r) => setTimeout(r, INTER_CALL_DELAY));
+
   // ── 1. Generate title ──────────────────────────────────────────────────────
   await emit({ step: 'title', message: 'Generating title…', progress: 0 });
   const title = await generateText(buildTitlePrompt(input));
   await step({ step: 'title', message: `Title: "${title}"`, data: { title } });
 
   // ── 2. Generate description ────────────────────────────────────────────────
+  await pause();
   const description = await generateText(buildDescriptionPrompt(title, input));
   await step({ step: 'title', message: 'Description ready', data: { description } });
 
   // ── 3. Generate summary / table of contents ────────────────────────────────
+  await pause();
   await emit({ step: 'summary', message: 'Generating table of contents…', progress: Math.round((completedSteps / totalSteps) * 100) });
   const chaptersMeta = await generateJSON<ChapterMeta[]>(buildSummaryPrompt(title, input));
   await step({ step: 'summary', message: `${chaptersMeta.length} chapters outlined`, data: { chaptersMeta } });
@@ -59,6 +66,7 @@ export async function createEbook(
       data: { chapterIndex: i + 1, title: meta.title },
     });
 
+    await pause();
     const content = await generateText(
       buildChapterPrompt(title, meta, i + 1, chaptersMeta.length, input),
       { maxTokens: 8192 },
