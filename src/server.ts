@@ -76,7 +76,8 @@ app.post('/api/generate', async (req: Request, res: Response) => {
 
 // Download endpoint
 app.get('/api/download/:id/:format', (req: Request, res: Response) => {
-  const { id, format } = req.params;
+  const id = String(req.params.id);
+  const format = String(req.params.format);
   const outputDir = path.resolve(process.cwd(), 'output');
 
   if (!fs.existsSync(outputDir)) {
