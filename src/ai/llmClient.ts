@@ -8,6 +8,13 @@ dotenv.config();
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const MAX_RETRIES = 5;
 
+/** Extract retry delay in ms from API error message, e.g. "Please retry in 58.14s" */
+function parseRetryDelay(msg: string): number | null {
+  const match = msg.match(/retry[^\d]*(\d+(?:\.\d+)?)\s*s/i);
+  if (match) return Math.ceil(parseFloat(match[1]) * 1000) + 500; // +500ms buffer
+  return null;
+}
+
 export type LLMProvider = 'openai' | 'anthropic' | 'gemini' | 'openai-compatible';
 
 interface LLMClientConfig {
@@ -70,10 +77,21 @@ export async function generateText(
 
         if (is429 && attempt < MAX_RETRIES) {
           attempt++;
-          const waitMs = Math.min(1000 * 2 ** attempt, 60_000);
+          // Use retry delay suggested by the API if available
+          const apiDelay = parseRetryDelay(msg);
+          const waitMs = apiDelay ?? Math.min(1000 * 2 ** attempt, 60_000);
           console.warn(`[gemini/${model}] Rate limited. Retry ${attempt}/${MAX_RETRIES} in ${waitMs / 1000}s…`);
           await sleep(waitMs);
           continue;
+        }
+
+        // Daily quota exhausted — tell the user clearly
+        if (is429) {
+          const daily = msg.includes('PerDay') || msg.includes('limit: 0');
+          const hint = daily
+            ? ` Daily quota exhausted for ${model}. Try a different model (e.g. GEMINI_MODEL=gemini-1.5-flash) or wait until tomorrow.`
+            : '';
+          throw new Error(`[gemini/${model}] Quota exceeded.${hint}`);
         }
         throw new Error(`[gemini/${model}] ${msg}`);
       }
