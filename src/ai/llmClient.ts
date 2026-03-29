@@ -4,7 +4,9 @@ import * as dotenv from 'dotenv';
 
 dotenv.config();
 
-export type LLMProvider = 'openai' | 'anthropic' | 'openai-compatible';
+export type LLMProvider = 'openai' | 'anthropic' | 'gemini' | 'openai-compatible';
+
+const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/';
 
 interface LLMClientConfig {
   provider?: LLMProvider;
@@ -16,15 +18,17 @@ interface LLMClientConfig {
 const DEFAULTS: Record<LLMProvider, { model: string }> = {
   openai: { model: 'gpt-4o-mini' },
   anthropic: { model: 'claude-haiku-4-5-20251001' },
+  gemini: { model: process.env.GEMINI_MODEL ?? 'gemini-2.0-flash' },
   'openai-compatible': { model: process.env.LLM_MODEL ?? 'gpt-4o-mini' },
 };
 
 function detectProvider(): LLMProvider {
+  if (process.env.GEMINI_API_KEY) return 'gemini';
   if (process.env.ANTHROPIC_API_KEY) return 'anthropic';
   if (process.env.OPENAI_API_KEY) return 'openai';
   if (process.env.LLM_BASE_URL) return 'openai-compatible';
   throw new Error(
-    'No AI API key found. Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or LLM_BASE_URL + LLM_API_KEY in .env',
+    'No AI API key found. Set GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, or LLM_BASE_URL + LLM_API_KEY in .env',
   );
 }
 
@@ -49,11 +53,14 @@ export async function generateText(
     return block.text.trim();
   }
 
-  // OpenAI or OpenAI-compatible
+  // OpenAI, Gemini, or OpenAI-compatible
   const clientOptions: ConstructorParameters<typeof OpenAI>[0] = {
     apiKey: process.env.OPENAI_API_KEY ?? process.env.LLM_API_KEY ?? 'no-key',
   };
-  if (provider === 'openai-compatible' && process.env.LLM_BASE_URL) {
+  if (provider === 'gemini') {
+    clientOptions.apiKey = process.env.GEMINI_API_KEY ?? '';
+    clientOptions.baseURL = GEMINI_BASE_URL;
+  } else if (provider === 'openai-compatible' && process.env.LLM_BASE_URL) {
     clientOptions.baseURL = process.env.LLM_BASE_URL;
   }
 
