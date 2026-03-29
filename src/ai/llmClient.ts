@@ -20,9 +20,17 @@ interface LLMClientConfig {
 const DEFAULTS: Record<LLMProvider, { model: string }> = {
   openai: { model: 'gpt-4o-mini' },
   anthropic: { model: 'claude-haiku-4-5-20251001' },
-  gemini: { model: process.env.GEMINI_MODEL ?? 'gemini-1.5-flash' },
+  gemini: { model: process.env.GEMINI_MODEL ?? 'gemini-2.0-flash' },
   'openai-compatible': { model: process.env.LLM_MODEL ?? 'gpt-4o-mini' },
 };
+
+/**
+ * gemini-1.5-x and earlier → stable v1 API
+ * gemini-2.x and experimental → v1beta
+ */
+function geminiApiVersion(model: string): string {
+  return /^gemini-1\./i.test(model) ? 'v1' : 'v1beta';
+}
 
 function detectProvider(): LLMProvider {
   if (process.env.GEMINI_API_KEY) return 'gemini';
@@ -46,10 +54,10 @@ export async function generateText(
   // ── Gemini (native SDK) ────────────────────────────────────────────────────
   if (provider === 'gemini') {
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? '');
-    const geminiModel = genAI.getGenerativeModel({
-      model,
-      generationConfig: { temperature, maxOutputTokens: maxTokens },
-    });
+    const geminiModel = genAI.getGenerativeModel(
+      { model, generationConfig: { temperature, maxOutputTokens: maxTokens } },
+      { apiVersion: geminiApiVersion(model) },
+    );
 
     let attempt = 0;
     while (true) {
@@ -58,7 +66,7 @@ export async function generateText(
         return result.response.text().trim();
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        const is429 = msg.includes('429') || msg.includes('quota') || msg.includes('rate');
+        const is429 = msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.toLowerCase().includes('quota exceeded');
 
         if (is429 && attempt < MAX_RETRIES) {
           attempt++;
