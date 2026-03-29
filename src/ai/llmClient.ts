@@ -18,7 +18,7 @@ interface LLMClientConfig {
 const DEFAULTS: Record<LLMProvider, { model: string }> = {
   openai: { model: 'gpt-4o-mini' },
   anthropic: { model: 'claude-haiku-4-5-20251001' },
-  gemini: { model: process.env.GEMINI_MODEL ?? 'gemini-2.0-flash' },
+  gemini: { model: process.env.GEMINI_MODEL ?? 'gemini-1.5-flash' },
   'openai-compatible': { model: process.env.LLM_MODEL ?? 'gpt-4o-mini' },
 };
 
@@ -65,14 +65,20 @@ export async function generateText(
   }
 
   const client = new OpenAI(clientOptions);
-  const response = await client.chat.completions.create({
-    model,
-    temperature,
-    max_tokens: maxTokens,
-    messages: [{ role: 'user', content: prompt }],
-  });
 
-  return response.choices[0]?.message?.content?.trim() ?? '';
+  try {
+    const response = await client.chat.completions.create({
+      model,
+      temperature,
+      max_tokens: maxTokens,
+      messages: [{ role: 'user', content: prompt }],
+    });
+    return response.choices[0]?.message?.content?.trim() ?? '';
+  } catch (err: unknown) {
+    const e = err as { status?: number; message?: string; error?: unknown };
+    const detail = e.error ? JSON.stringify(e.error) : e.message ?? String(err);
+    throw new Error(`[${provider}/${model}] API error ${e.status ?? ''}: ${detail}`);
+  }
 }
 
 export async function generateJSON<T>(
