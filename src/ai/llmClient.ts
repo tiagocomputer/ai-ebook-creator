@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as dotenv from 'dotenv';
 
 dotenv.config();
@@ -7,8 +8,6 @@ dotenv.config();
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export type LLMProvider = 'openai' | 'anthropic' | 'gemini' | 'openai-compatible';
-
-const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/';
 
 interface LLMClientConfig {
   provider?: LLMProvider;
@@ -43,6 +42,32 @@ export async function generateText(
   const temperature = config.temperature ?? 0.7;
   const maxTokens = config.maxTokens ?? 4096;
 
+  // ── Gemini (native SDK) ──────────────────────────────────────────────────
+  if (provider === 'gemini') {
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? '');
+    const geminiModel = genAI.getGenerativeModel({ model });
+
+    let attempt = 0;
+    while (true) {
+      try {
+        const result = await geminiModel.generateContent(prompt);
+        return result.response.text().trim();
+      } catch (err: unknown) {
+        const e = err as { status?: number; message?: string };
+        const status = e.status ?? (e.message?.includes('429') ? 429 : 0);
+
+        if (status === 429 && attempt < MAX_RETRIES) {
+          attempt++;
+          const waitMs = Math.min(1000 * 2 ** attempt, 60_000);
+          console.warn(`[gemini/${model}] Rate limited (429). Retry ${attempt}/${MAX_RETRIES} in ${waitMs / 1000}s…`);
+          await sleep(waitMs);
+          continue;
+        }
+        throw new Error(`[gemini/${model}] API error: ${e.message ?? String(err)}`);
+      }
+    }
+  }
+
   if (provider === 'anthropic') {
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const response = await client.messages.create({
@@ -55,14 +80,11 @@ export async function generateText(
     return block.text.trim();
   }
 
-  // OpenAI, Gemini, or OpenAI-compatible
+  // OpenAI or OpenAI-compatible
   const clientOptions: ConstructorParameters<typeof OpenAI>[0] = {
     apiKey: process.env.OPENAI_API_KEY ?? process.env.LLM_API_KEY ?? 'no-key',
   };
-  if (provider === 'gemini') {
-    clientOptions.apiKey = process.env.GEMINI_API_KEY ?? '';
-    clientOptions.baseURL = GEMINI_BASE_URL;
-  } else if (provider === 'openai-compatible' && process.env.LLM_BASE_URL) {
+  if (provider === 'openai-compatible' && process.env.LLM_BASE_URL) {
     clientOptions.baseURL = process.env.LLM_BASE_URL;
   }
 
